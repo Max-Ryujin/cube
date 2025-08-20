@@ -1,2 +1,11 @@
 # cube
-Code related to ogbench cube neviroment experiments
+
+
+## requirements 
+- PlanOracle from ogbench.manipspace.oracles.plan.plan_oracle 
+- lie from ogbench.manipspace
+- numpy
+- gymnasium
+- imageio
+- re
+
