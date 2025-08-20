@@ -6,18 +6,6 @@ from high_level_policy import CubePlanOracle
 import mujoco
 
 
-# red, blue, yellow, green
-
-ACTION_LINES = [
-    "(unstack b2 b3 robot)",
-    "(stack b2 b1 robot)",
-    "(pick-up b3 robot)",
-    "(stack b3 b2 robot)",
-    "(pick-up b4 robot)",
-    "(stack b4 b3 robot)",
-]
-
-
 def parse_action_line(line: str):
     # parser
     line = line.strip()
@@ -38,10 +26,9 @@ def discover_block_ids(info: dict):
     return sorted(set(ids))
 
 
-def map_block_symbol(sym: str, available_ids):
+def map_block_symbol(sym: str):
     """Map 'b1'/'b2'/... onto environment block ids.
     Assumptions for simplification:
-      - available_ids are contiguous 0-based integers (e.g., [0, 1, ..., N-1]).
       - sym is 'b' (or 'B') followed by a 1-based integer (e.g., 'b1', 'b2').
     """
     #TODO this has to take the actions into account. the mapping is most likely different
@@ -70,28 +57,7 @@ def set_start_state(env, startconfiguration):
     mujoco.mj_forward(unwrapped_env.model, unwrapped_env.data)
     unwrapped_env.post_step()
 
-
-
-# MAIN
-
-env = gym.make('cube-quadruple-v0', terminate_at_goal=True, mode='data_collection', permute_blocks=False)
-ob, info = env.reset()
-# red, blue, yellow, green
-set_start_state(env, [[0.5, -0.1, 0], [0.5, -0.1, 0.041], [0.3, -0.2, 0], [0.5, 0.2, 0]])
-unwrapped_env = env.unwrapped
-obs = unwrapped_env.compute_observation()
-info = unwrapped_env.get_reset_info()
-
-agent = CubePlanOracle(env=env, noise=0, noise_smoothing=0)
-agent.reset(ob, info)
-
-available_ids = discover_block_ids(info)
-print("Available block ids (from info):", available_ids)
-parsed_actions = [parse_action_line(s) for s in ACTION_LINES]
-
-# Build a symbol->id mapping on demand and echo decisions each time
-
-def start_high_level_action(verb: str, args: list, info: dict):
+def start_high_level_action(verb: str, args: list, info: dict, agent: CubePlanOracle):
     verb_norm = verb.lower().replace('-', '_')
 
     # robot not needed
@@ -100,7 +66,7 @@ def start_high_level_action(verb: str, args: list, info: dict):
     # Map symbols 
     if verb_norm in {"pick_up", "pickup"}:
         b_sym = filtered_args[0]
-        b_id = map_block_symbol(b_sym, available_ids)
+        b_id = map_block_symbol(b_sym)
         print(f"[plan] (pick-up {b_sym}) -> block_id={b_id}")
         agent.start_task(info, 'pick_up', block_id=b_id)
         return {"verb": "pick_up", "block": b_id}
@@ -109,8 +75,8 @@ def start_high_level_action(verb: str, args: list, info: dict):
         # We accept (unstack top base) but only top is required by the policy
         top_sym = filtered_args[0]
         base_sym = filtered_args[1] if len(filtered_args) >= 2 else None
-        top_id = map_block_symbol(top_sym, available_ids)
-        base_id = map_block_symbol(base_sym, available_ids) if base_sym else None
+        top_id = map_block_symbol(top_sym)
+        base_id = map_block_symbol(base_sym) if base_sym else None
         print(f"[plan] (unstack {top_sym} {base_sym}) -> top_id={top_id}, base_id={base_id}")
         agent.start_task(info, 'unstack', top_block_id=top_id)
         return {"verb": "unstack", "top": top_id, "base": base_id}
@@ -121,7 +87,7 @@ def start_high_level_action(verb: str, args: list, info: dict):
             held_sym = None
         else:
             held_sym, base_sym = filtered_args[0], filtered_args[1]
-        base_id = map_block_symbol(base_sym, available_ids)
+        base_id = map_block_symbol(base_sym)
         print(f"[plan] (stack {held_sym} {base_sym}) -> base_id={base_id} (held cube assumed)")
         agent.start_task(info, 'stack', base_block_id=base_id)
         return {"verb": "stack", "base": base_id, "held_label": held_sym}
@@ -134,49 +100,105 @@ def start_high_level_action(verb: str, args: list, info: dict):
     else:
         print("wrong action")
 
-# Execute the action sequence
 
-frames = []
 
-for verb, args in parsed_actions:
-    meta = start_high_level_action(verb, args, info)
+# MAIN
 
-    step_count = 0
-    last_done = getattr(agent, '_done', True)
-    while True:
-        a = agent.select_action(ob, info)
-        ob, reward, terminated, truncated, info = env.step(a)
-        step_count += 1
+def run_actions(initial_configuration, action_sequence, env=None, output_path=None):
+    """
+    Run a sequence of actions on the cube environment.
+    initial_configuration: The starting configuration of the cubes.
+    action_sequence: A list of actions to perform.
+    optional: env: The environment to use (if not provided, a new one will be created).
+    optional: output_path: The path to save the output video (if not provided, no video will be saved).
+    """
+    if env is None:
+        env = gym.make('cube-quadruple-v0', terminate_at_goal=True, mode='data_collection', permute_blocks=False)
+    else:
+        #check if env has the correct number of cubes for initial_configuration
+        if not unwrapped_env._num_cubes == len(initial_configuration):
+            raise ValueError("Environment has a different number of cubes than initial configuration.")
 
-        # Frame capture
-        frame = getattr(env.unwrapped, 'get_pixel_observation', None)
-        if callable(frame):
-            img = env.unwrapped.get_pixel_observation()
-            if img is not None:
-                frames.append(img)
+    ob, info = env.reset()
 
-        plan_done = getattr(agent, '_done', True)
-        if plan_done and not last_done:
-            print(f"[plan] Finished {meta} in {step_count} env steps.")
-            break
-        last_done = plan_done
+    # red, blue, yellow, green
+
+    # check if action sequence is a array of strings
+    if not isinstance(action_sequence, list) or not all(isinstance(s, str) for s in action_sequence):
+        raise ValueError("Action sequence must be a list of strings.")
+    ACTION_LINES = action_sequence
+
+    
+    # red, blue, yellow, green
+    #set_start_state(env, [[0.5, -0.1, 0], [0.5, -0.1, 0.041], [0.3, -0.2, 0], [0.5, 0.2, 0]])
+    # check form of initial_configuration
+    set_start_state(env, initial_configuration)
+    unwrapped_env = env.unwrapped
+    obs = unwrapped_env.compute_observation()
+    info = unwrapped_env.get_reset_info()
+
+    agent = CubePlanOracle(env=env, noise=0, noise_smoothing=0)
+    agent.reset(obs, info)
+    parsed_actions = [parse_action_line(s) for s in ACTION_LINES]
+
+
+    frames = []
+
+    for verb, args in parsed_actions:
+        meta = start_high_level_action(verb, args, info, agent)
+
+        step_count = 0
+        last_done = getattr(agent, '_done', True)
+        while True:
+            a = agent.select_action(obs, info)
+            obs, reward, terminated, truncated, info = env.step(a)
+            step_count += 1
+
+            # Frame capture
+            frame = getattr(env.unwrapped, 'get_pixel_observation', None)
+            if callable(frame):
+                img = env.unwrapped.get_pixel_observation()
+                if img is not None:
+                    frames.append(img)
+
+            plan_done = getattr(agent, '_done', True)
+            if plan_done and not last_done:
+                print(f"[plan] Finished {meta} in {step_count} env steps.")
+                break
+            last_done = plan_done
+
+            if terminated or truncated:
+                break
 
         if terminated or truncated:
             break
 
-    if terminated or truncated:
-        break
+    if output_path is not None:
+        save_path = output_path
+    else:
+        save_path = 'action_sequence.mp4'
+    try:
+        env_dt = float(getattr(env.unwrapped, '_control_timestep', 0.03))
+        fps = int(round(1.0 / env_dt)) if env_dt > 0 else 30
+    except Exception:
+        fps = 30
+
+    with imageio.get_writer(save_path, fps=fps) as writer:
+        for f in frames:
+            writer.append_data(f)
+    print('Saved video to', save_path)
+
+a_seq = [
+    "(unstack b2 b3 robot)",
+    "(stack b2 b1 robot)",
+    "(pick-up b3 robot)",
+    "(stack b3 b2 robot)",
+    "(pick-up b4 robot)",
+    "(stack b4 b3 robot)",
+]
+
+run_actions(initial_configuration=[[0.5, -0.1, 0], [0.5, -0.1, 0.041], [0.3, -0.2, 0], [0.5, 0.2, 0]], action_sequence=a_seq)
 
 
-save_path = 'test_policy.mp4'
-try:
-    env_dt = float(getattr(env.unwrapped, '_control_timestep', 0.03))
-    fps = int(round(1.0 / env_dt)) if env_dt > 0 else 30
-except Exception:
-    fps = 30
-
-with imageio.get_writer(save_path, fps=fps) as writer:
-    for f in frames:
-        writer.append_data(f)
-print('Saved video to', save_path)
-
+    # red, blue, yellow, green
+    #set_start_state(env, [[0.5, -0.1, 0], [0.5, -0.1, 0.041], [0.3, -0.2, 0], [0.5, 0.2, 0]])

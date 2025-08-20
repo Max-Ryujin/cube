@@ -119,10 +119,13 @@ class CubePlanOracle(PlanOracle):
     def _compute_keyframes_pick_up(self, plan_input, unstack_bias: bool = False):
         # Compute keyframes for the pick-up or unstack action
         poses = {}
+        block_translation = plan_input['block_initial'].translation().copy()
+        if unstack_bias:
+            block_translation[-1] += self._block_size / 2.0 # needs to grab a bit higher
         block_contact = self.shortest_yaw(         # Align the effector with the block to be picked up
             eff_yaw=self.get_yaw(plan_input['effector_initial']),
             obj_yaw=self.get_yaw(plan_input['block_initial']),
-            translation=plan_input['block_initial'].translation(),
+            translation=block_translation,
         )
         poses['initial'] = plan_input['effector_initial'] # Initial effector pose
         approach_h = self._approach_h * (1.3 if unstack_bias else 1.0) # add higher approach for stacks
