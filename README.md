@@ -8,4 +8,5 @@
 - gymnasium
 - imageio
 - re
+- mujoco
 
