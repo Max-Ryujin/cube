@@ -76,14 +76,26 @@ class CubePlanOracle(PlanOracle):
 
     def put_down(self, info):
         # place cube on the table below the current position
-        # TODO Check if another cube is in the way.
         eff_initial = self.to_pose(
             pos=info['proprio/effector_pos'],
             yaw=info['proprio/effector_yaw'][0],
         )
         place_translation = eff_initial.translation().copy()
-        place_translation[-1] = self._block_size / 2.0 # place the block on the table
-        block_goal = lie.SE3.from_rotation_and_translation( # precise goal pose for the block to be placed
+        place_translation[-1] = self._block_size / 2.0  # table height
+
+        # check table
+        for key, pos in info.items():
+            if key.endswith("_pos"):
+                pos = np.asarray(pos, dtype=float)
+                # check if block is on table plane
+                if abs(pos[2] - self._block_size / 2.0) < 1e-2:
+                    # check XY overlap (within half a block size)
+                    if np.linalg.norm(pos[:2] - place_translation[:2]) < self._block_size:
+                        # shift to the side
+                        place_translation[0] += self._clearance_xy
+                        break
+
+        block_goal = lie.SE3.from_rotation_and_translation(
             rotation=eff_initial.rotation(),
             translation=place_translation,
         )
