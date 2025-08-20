@@ -3,13 +3,14 @@ import imageio
 import numpy as np
 import gymnasium as gym
 from high_level_policy import CubePlanOracle
+import mujoco
 
+
+# red, blue, yellow, green
 
 ACTION_LINES = [
     "(unstack b2 b3 robot)",
     "(stack b2 b1 robot)",
-    "(pick-up b3 robot)",
-    "(put-down b3 robot)",
     "(pick-up b3 robot)",
     "(stack b3 b2 robot)",
     "(pick-up b4 robot)",
@@ -46,13 +47,40 @@ def map_block_symbol(sym: str, available_ids):
     #TODO this has to take the actions into account. the mapping is most likely different
     m = re.match(r"^[bB](\d+)$", sym)
     k = int(m.group(1))
-    return k - 1
+   # return k - 1
+
+    # mapping b2 = 1, b3 = 0, b1 = 2, b4 = 3
+    mapping = {1: 2, 2: 1, 3: 0, 4: 3}
+    return mapping.get(k, None)
+
+
+def set_start_state(env, startconfiguration):
+    unwrapped_env = env.unwrapped
+    for i in range(unwrapped_env._num_cubes):
+        # Get the specific joint for the cube
+        joint = unwrapped_env.data.joint(f'object_joint_{i}')
+        
+        # Set its position (the first 3 values of qpos)
+        joint.qpos[:3] = startconfiguration[i]
+        
+        # Reset its velocity to zero for stability
+        joint.qvel[:] = 0
+
+    # CRITICAL: Re-compute the simulation state after changing qpos
+    mujoco.mj_forward(unwrapped_env.model, unwrapped_env.data)
+    unwrapped_env.post_step()
+
 
 
 # MAIN
 
-env = gym.make('cube-quadruple-v0', terminate_at_goal=True, mode='data_collection')
+env = gym.make('cube-quadruple-v0', terminate_at_goal=True, mode='data_collection', permute_blocks=False)
 ob, info = env.reset()
+# red, blue, yellow, green
+set_start_state(env, [[0.5, -0.1, 0], [0.5, -0.1, 0.041], [0.3, -0.2, 0], [0.5, 0.2, 0]])
+unwrapped_env = env.unwrapped
+obs = unwrapped_env.compute_observation()
+info = unwrapped_env.get_reset_info()
 
 agent = CubePlanOracle(env=env, noise=0, noise_smoothing=0)
 agent.reset(ob, info)
@@ -139,7 +167,6 @@ for verb, args in parsed_actions:
     if terminated or truncated:
         break
 
-# save to mp4
 
 save_path = 'test_policy.mp4'
 try:
